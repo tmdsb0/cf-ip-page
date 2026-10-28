@@ -2,33 +2,66 @@ from curl_cffi import requests
 import re
 import os
 import time
-import random
 
 def main():
-    # 核心修改1：在 URL 后加入随机时间戳，强行打破 Cloudflare 的 CDN 缓存
-    timestamp = int(time.time())
-    url = f'https://api.uouin.com/cloudflare.html?_nocache={timestamp}&r={random.random()}'
+    # 步骤 1：先获取主页 HTML，目的是提取里面隐藏的动态 API Key，并获取 CF 的通行 Cookie
+    base_url = 'https://api.uouin.com/cloudflare.html'
     
-    # 核心修改2：深度伪装请求头，假装是国内真实用户，防止机房 IP 被地域歧视
     headers = {
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
         'Referer': 'https://api.uouin.com/'
     }
 
     try:
-        # impersonate="chrome110" 完美伪装浏览器指纹，绕过盾
-        response = requests.get(url, impersonate="chrome110", headers=headers, timeout=30)
-        response.encoding = 'utf-8'
-        html = response.text
+        print("1. 正在获取主页，穿透防火墙并提取动态 Key...")
+        # 必须使用 Session，这样第一步获取到的 Cloudflare 验证通过的 Cookie 才能带到第二步去
+        session = requests.Session(impersonate="chrome110")
+        
+        resp_html = session.get(base_url, headers=headers, timeout=30)
+        html_text = resp_html.text
+        
+        # 尝试在网页源码中捕捉这个 32 位的 key
+        # 兼容各种写法，比如 key="9f8..." 或 key: '9f8...' 或 URL 里的 key=9f8...
+        api_key = "9f82787dee401e1cc0b86facb626b503" # 使用你抓到的 key 作为保底
+        key_match = re.search(r'key\s*(?:=|:)\s*[\'"]?([a-fA-F0-9]{32})[\'"]?', html_text)
+        url_match = re.search(r'key=([a-fA-F0-9]{32})', html_text)
+        
+        if key_match:
+            api_key = key_match.group(1)
+            print(f"-> 成功从网页变量中提取到最新 Key: {api_key}")
+        elif url_match:
+            api_key = url_match.group(1)
+            print(f"-> 成功从接口地址中提取到最新 Key: {api_key}")
+        else:
+            print("-> 未能自动提取，将使用默认抓包 Key 尝试获取。")
 
+        # 步骤 2：构造真实的 API 请求
+        # 自动生成当前的 13 位毫秒级时间戳，完全模拟浏览器的 Date.now()
+        current_time_ms = int(time.time() * 1000)
+        
+        # 拼接你刚才抓包抓到的真实底层接口
+        api_url = f'https://api.uouin.com/index.php/index/Cloudflare?key={api_key}&time={current_time_ms}'
+        print(f"2. 正在请求真实数据接口...")
+        
+        # 加上 AJAX 异步请求专属的请求头
+        headers['Accept'] = 'application/json, text/javascript, */*; q=0.01'
+        headers['X-Requested-With'] = 'XMLHttpRequest' 
+        
+        # 去请求真实接口（此时带着第一步拿到的 Session Cookie，不会再被拦截）
+        resp_data = session.get(api_url, headers=headers, timeout=30)
+        resp_data.encoding = 'utf-8'
+        data_text = resp_data.text
+        
+        print("3. 开始解析最新 IP 数据...")
+        
+        # 步骤 3：通用正则解析（无视它是返回 JSON 还是 HTML，直接暴力提取 IP）
         seen_ips = set()
         results = []
         
-        # 兼容性分割 HTML
-        blocks = re.split(r'(?i)<tr[^>]*>|<li[^>]*>|<div[^>]*>|<br\s*/?>|\n', html)
+        # 处理 JSON 中可能出现的转义斜杠和换行符
+        data_text = data_text.replace('\\/', '/').replace('\\n', '\n')
+        blocks = re.split(r'(?i)<tr[^>]*>|<li[^>]*>|<div[^>]*>|<br\s*/?>|\\n|\n', data_text)
         
         for block in blocks:
             clean_text = re.sub(r'<[^>]+>', ' ', block).strip()
@@ -61,9 +94,10 @@ def main():
             os.makedirs('public', exist_ok=True)
             with open('public/ip.txt', 'w', encoding='utf-8') as f:
                 f.write('\n'.join(results))
-            print(f"成功提取 {len(results)} 个 IP并保存。")
+            print(f"🎉 成功提取 {len(results)} 个最新 IP并保存至 public/ip.txt！")
         else:
-            print("未提取到任何 IP。")
+            print("⚠️ 未能在数据接口中提取到任何 IP。")
+            print("接口返回的部分内容:", data_text[:200])
 
     except Exception as e:
         print(f"抓取发生错误: {e}")
