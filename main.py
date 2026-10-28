@@ -1,12 +1,27 @@
 from curl_cffi import requests
 import re
 import os
+import time
+import random
 
 def main():
-    url = 'https://api.uouin.com/cloudflare.html'
+    # 核心修改1：在 URL 后加入随机时间戳，强行打破 Cloudflare 的 CDN 缓存
+    timestamp = int(time.time())
+    url = f'https://api.uouin.com/cloudflare.html?_nocache={timestamp}&r={random.random()}'
+    
+    # 核心修改2：深度伪装请求头，假装是国内真实用户，防止机房 IP 被地域歧视
+    headers = {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Referer': 'https://api.uouin.com/'
+    }
+
     try:
-        # impersonate="chrome110" 完美伪装真实浏览器指纹，绕过 CF 盾
-        response = requests.get(url, impersonate="chrome110", timeout=30)
+        # impersonate="chrome110" 完美伪装浏览器指纹，绕过盾
+        response = requests.get(url, impersonate="chrome110", headers=headers, timeout=30)
+        response.encoding = 'utf-8'
         html = response.text
 
         seen_ips = set()
@@ -43,7 +58,6 @@ def main():
             results.append(f"{ip}:{port}#{isp}")
 
         if results:
-            # 创建 public 文件夹并将结果保存为 ip.txt
             os.makedirs('public', exist_ok=True)
             with open('public/ip.txt', 'w', encoding='utf-8') as f:
                 f.write('\n'.join(results))
